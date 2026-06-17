@@ -1,317 +1,551 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
+import { SUPABASE_URL, SUPABASE_ANON_KEY, APP_NAME, APP_TAGLINE } from './config.js';
 
-const hasSupabase = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
-const supabase = hasSupabase ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+const CONFIG_OK = SUPABASE_URL.startsWith('http') && SUPABASE_ANON_KEY.length > 40;
+const supabase = CONFIG_OK ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 const app = document.querySelector('#app');
-const toastEl = document.querySelector('#toast');
-const state = { user: null, profile: null, portfolio: null, tab: 'overview', editing: {} };
-const demoKey = 'portolink_demo_data_v1';
 
-const demoData = {
-  profile: {
-    id: 'demo-profile', username: 'erdinus', full_name: 'Erdinus', headline: 'Informatics Student & Accounting Staff', bio: 'Saya menggabungkan pengalaman akuntansi, administrasi, dan pengembangan web untuk membantu bisnis bekerja lebih rapi dan efisien.', photo_url: '', location: 'Yogyakarta, Indonesia', email_public: 'erdinus@example.com', phone_public: '', linkedin_url: '', github_url: 'https://github.com/erdthedev', instagram_url: '', website_url: '', template_id: 'clean-blue', is_published: true, is_premium: false
-  },
-  skills: [
-    { id: crypto.randomUUID(), name: 'Accounting', level: 'Advanced' },
-    { id: crypto.randomUUID(), name: 'Administration', level: 'Advanced' },
-    { id: crypto.randomUUID(), name: 'Web Development', level: 'Intermediate' }
-  ],
-  projects: [
-    { id: crypto.randomUUID(), title: 'UangKu', description: 'Aplikasi pencatatan keuangan pribadi berbasis web app, Supabase, dan PWA.', image_url: '', demo_url: 'https://uangku-vercel.vercel.app/', repo_url: '', tags: 'Finance, Supabase, Vercel' }
-  ],
-  experiences: [
-    { id: crypto.randomUUID(), role: 'Accounting Staff', company: 'PT Lingkar Organik', start_date: '2024', end_date: 'Sekarang', description: 'Mengelola data administrasi, pencatatan transaksi, dan dukungan operasional.' }
-  ],
-  educations: [
-    { id: crypto.randomUUID(), school: 'S1 Informatika', degree: 'Informatics', year: 'Sekarang', description: 'Fokus pada pengembangan web, database, dan sistem informasi.' }
-  ],
-  certificates: []
+const state = {
+  session: null,
+  user: null,
+  profile: null,
+  isAdmin: false,
+  loading: false,
+  lastError: ''
 };
 
-function getDemo() {
-  const stored = localStorage.getItem(demoKey);
-  if (stored) return JSON.parse(stored);
-  localStorage.setItem(demoKey, JSON.stringify(demoData));
-  return structuredClone(demoData);
-}
-function setDemo(data) { localStorage.setItem(demoKey, JSON.stringify(data)); }
-function toast(message) {
-  toastEl.textContent = message;
-  toastEl.classList.add('show');
-  setTimeout(() => toastEl.classList.remove('show'), 3200);
-}
-function path() { return window.location.pathname; }
-function nav(to) { history.pushState({}, '', to); render(); }
-window.addEventListener('popstate', render);
-window.nav = nav;
-window.printPortfolio = () => window.print();
+const routes = [
+  '/', '/login', '/register', '/dashboard', '/dashboard/profile', '/dashboard/projects', '/dashboard/skills',
+  '/dashboard/experience', '/dashboard/education', '/dashboard/certificates', '/dashboard/settings', '/admin',
+  '/admin/users', '/admin/messages'
+];
 
 function escapeHtml(value = '') {
-  return String(value).replace(/[&<>'"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[ch]));
-}
-function initials(name = 'P') { return name.split(' ').filter(Boolean).slice(0,2).map(x => x[0]).join('').toUpperCase() || 'P'; }
-function link(url, label) { return url ? `<a class="btn small ghost" href="${escapeHtml(url)}" target="_blank" rel="noopener">${label}</a>` : ''; }
-function csvTags(tags = '') { return tags.split(',').map(x => x.trim()).filter(Boolean); }
-
-async function getSessionUser() {
-  if (!hasSupabase) return JSON.parse(localStorage.getItem('portolink_demo_user') || 'null');
-  const { data } = await supabase.auth.getUser();
-  return data.user;
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
 }
 
-async function signOut() {
-  if (hasSupabase) await supabase.auth.signOut();
-  localStorage.removeItem('portolink_demo_user');
-  state.user = null;
-  state.profile = null;
-  nav('/');
+function slugify(value = '') {
+  return String(value).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 40) || 'user';
 }
-window.signOut = signOut;
 
-async function signIn(event) {
-  event.preventDefault();
-  const form = new FormData(event.target);
-  const email = form.get('email');
-  const password = form.get('password');
-  if (!hasSupabase) {
-    localStorage.setItem('portolink_demo_user', JSON.stringify({ id: 'demo-user', email }));
-    toast('Mode demo aktif. Isi config Supabase untuk database asli.');
-    nav('/dashboard');
-    return;
+function path() {
+  return window.location.pathname.replace(/\/$/, '') || '/';
+}
+
+function go(to) {
+  window.history.pushState({}, '', to);
+  render();
+}
+
+function setLoading(value) {
+  state.loading = value;
+}
+
+function toast(message, type = 'success') {
+  const box = document.createElement('div');
+  box.className = `toast ${type}`;
+  box.textContent = message;
+  document.body.appendChild(box);
+  Object.assign(box.style, {
+    position: 'fixed', right: '18px', bottom: '18px', padding: '12px 14px', borderRadius: '14px',
+    background: type === 'error' ? '#fee2e2' : '#dcfce7', color: type === 'error' ? '#991b1b' : '#166534',
+    border: '1px solid rgba(0,0,0,.08)', zIndex: 9999, fontWeight: 800, boxShadow: '0 18px 40px rgba(0,0,0,.12)'
+  });
+  setTimeout(() => box.remove(), 2600);
+}
+
+function publicUrl(username) {
+  return `${window.location.origin}/u/${username}`;
+}
+
+function nav() {
+  const authLinks = state.user
+    ? `<a href="/dashboard" data-link>Dashboard</a>${state.isAdmin ? '<a href="/admin" data-link>Admin</a>' : ''}<button class="link-btn" data-action="logout">Logout</button>`
+    : '<a href="/login" data-link>Login</a><a class="btn primary" href="/register" data-link>Mulai Gratis</a>';
+  return `
+    <header class="navbar no-print">
+      <div class="nav-inner">
+        <a class="brand" href="/" data-link><span class="logo">P</span><span>${APP_NAME}</span></a>
+        <nav class="nav-links">
+          <a href="/" data-link>Home</a>
+          ${authLinks}
+        </nav>
+      </div>
+    </header>`;
+}
+
+function shell(content) {
+  app.innerHTML = `${nav()}${content}<footer class="footer no-print">${APP_NAME} © ${new Date().getFullYear()} — Portfolio builder siap deploy.</footer>`;
+  bindGlobal();
+}
+
+function configWarning() {
+  if (CONFIG_OK) return '';
+  return `<div class="alert warning"><b>Config belum diisi.</b> Buka <code>config.js</code>, lalu isi SUPABASE_URL dan SUPABASE_ANON_KEY. Tanpa itu login/database belum bisa jalan.</div>`;
+}
+
+async function init() {
+  if (supabase) {
+    const { data } = await supabase.auth.getSession();
+    state.session = data.session || null;
+    state.user = data.session?.user || null;
+    if (state.user) await hydrateUser();
+    supabase.auth.onAuthStateChange(async (_event, session) => {
+      state.session = session;
+      state.user = session?.user || null;
+      state.profile = null;
+      state.isAdmin = false;
+      if (state.user) await hydrateUser();
+      render();
+    });
   }
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) return toast(error.message);
-  nav('/dashboard');
-}
-window.signIn = signIn;
-
-async function signUp(event) {
-  event.preventDefault();
-  const form = new FormData(event.target);
-  const email = form.get('email');
-  const password = form.get('password');
-  const username = String(form.get('username') || '').toLowerCase().replace(/[^a-z0-9_\-]/g, '');
-  const full_name = form.get('full_name');
-  if (!username || username.length < 3) return toast('Username minimal 3 karakter.');
-  if (!hasSupabase) {
-    const data = getDemo();
-    data.profile.username = username;
-    data.profile.full_name = full_name || username;
-    setDemo(data);
-    localStorage.setItem('portolink_demo_user', JSON.stringify({ id: 'demo-user', email }));
-    toast('Akun demo dibuat.');
-    nav('/dashboard');
-    return;
-  }
-  const { data, error } = await supabase.auth.signUp({ email, password });
-  if (error) return toast(error.message);
-  if (data.user) {
-    const { error: insertError } = await supabase.from('profiles').insert({ user_id: data.user.id, username, full_name, headline: 'Professional Portfolio', is_published: true });
-    if (insertError) toast(insertError.message);
-  }
-  toast('Registrasi berhasil. Kalau email confirmation aktif, cek email dulu.');
-  nav('/login');
-}
-window.signUp = signUp;
-
-async function loadMyPortfolio() {
-  const user = await getSessionUser();
-  state.user = user;
-  if (!user) return null;
-  if (!hasSupabase) return getDemo();
-  const { data: profile, error } = await supabase.from('profiles').select('*').eq('user_id', user.id).maybeSingle();
-  if (error) throw error;
-  if (!profile) return null;
-  const [projects, skills, experiences, educations, certificates] = await Promise.all([
-    supabase.from('projects').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
-    supabase.from('skills').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
-    supabase.from('experiences').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
-    supabase.from('educations').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
-    supabase.from('certificates').select('*').eq('user_id', user.id).order('created_at', { ascending: false })
-  ]);
-  return { profile, projects: projects.data || [], skills: skills.data || [], experiences: experiences.data || [], educations: educations.data || [], certificates: certificates.data || [] };
+  render();
 }
 
-async function loadPublicPortfolio(username) {
-  if (!hasSupabase) {
-    const data = getDemo();
-    if (data.profile.username !== username) return null;
-    return data;
-  }
-  const { data: profile, error } = await supabase.from('profiles').select('*').eq('username', username).eq('is_published', true).maybeSingle();
-  if (error || !profile) return null;
-  const userId = profile.user_id;
-  const [projects, skills, experiences, educations, certificates] = await Promise.all([
-    supabase.from('projects').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
-    supabase.from('skills').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
-    supabase.from('experiences').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
-    supabase.from('educations').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
-    supabase.from('certificates').select('*').eq('user_id', userId).order('created_at', { ascending: false })
-  ]);
-  return { profile, projects: projects.data || [], skills: skills.data || [], experiences: experiences.data || [], educations: educations.data || [], certificates: certificates.data || [] };
+async function hydrateUser() {
+  if (!supabase || !state.user) return;
+  const { data: profile } = await supabase.from('profiles').select('*').eq('user_id', state.user.id).maybeSingle();
+  state.profile = profile || null;
+  const { data: admin } = await supabase.from('admin_users').select('user_id').eq('user_id', state.user.id).maybeSingle();
+  state.isAdmin = Boolean(admin);
+}
+
+function bindGlobal() {
+  document.querySelectorAll('[data-link]').forEach(el => {
+    el.addEventListener('click', e => {
+      const href = el.getAttribute('href');
+      if (!href || href.startsWith('http')) return;
+      e.preventDefault();
+      go(href);
+    });
+  });
+  document.querySelectorAll('[data-action="logout"]').forEach(btn => btn.addEventListener('click', logout));
+}
+
+async function logout() {
+  if (supabase) await supabase.auth.signOut();
+  state.session = null; state.user = null; state.profile = null; state.isAdmin = false;
+  go('/');
 }
 
 function landing() {
-  app.innerHTML = `
-  <header class="topbar">
-    <div class="container nav">
-      <button class="brand" onclick="nav('/')"><span class="logo">P</span><span>PortoLink</span></button>
-      <nav class="navlinks">
-        <a href="#fitur">Fitur</a><a href="#harga">Harga</a><a href="#cara">Cara Kerja</a>
-        <button class="btn ghost" onclick="nav('/login')">Login</button>
-        <button class="btn primary" onclick="nav('/register')">Mulai Gratis</button>
-      </nav>
-    </div>
-  </header>
-  <main>
-    <section class="hero"><div class="container hero-grid">
-      <div>
-        <span class="badge">Portfolio builder + PDF export</span>
-        <h1>Bikin link portofolio profesional tanpa deploy sendiri.</h1>
-        <p>PortoLink membantu mahasiswa, fresh graduate, freelancer, dan job seeker membuat portofolio online yang bisa dibagikan ke HRD, klien, atau perusahaan.</p>
-        <div class="hero-actions"><button class="btn primary" onclick="nav('/register')">Buat Portofolio</button><button class="btn" onclick="nav('/u/erdinus')">Lihat Demo</button></div>
+  shell(`
+    <main class="container">
+      ${configWarning()}
+      <section class="hero">
+        <div>
+          <span class="eyebrow">Portfolio SaaS siap jual</span>
+          <h1>Bikin link portofolio dan PDF profesional tanpa ribet.</h1>
+          <p>${APP_TAGLINE} User cukup isi data, pilih publikasi, lalu dapat link seperti <b>/u/username</b> untuk dikirim ke HRD atau calon klien.</p>
+          <div class="actions">
+            <a class="btn primary" href="/register" data-link>Buat Portofolio</a>
+            <a class="btn ghost" href="/login" data-link>Login</a>
+          </div>
+        </div>
+        <div class="hero-card">
+          <div class="preview-window">
+            <div class="preview-top"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+            <div class="preview-body">
+              <div class="avatar">👤</div>
+              <h2>Nama Profesional</h2>
+              <p class="muted">Accounting Staff • Informatics Student • Web Builder</p>
+              <div class="pill-row"><span class="pill">Project</span><span class="pill">Skill</span><span class="pill">Experience</span><span class="pill">PDF</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section class="grid grid-3">
+        <div class="card"><h3>Untuk user</h3><p class="muted">Edit profil, project, skill, pengalaman, pendidikan, dan sertifikat sendiri.</p></div>
+        <div class="card"><h3>Untuk bisnis kamu</h3><p class="muted">Satu aplikasi bisa melayani banyak user lewat URL /u/username.</p></div>
+        <div class="card"><h3>Untuk HRD</h3><p class="muted">Link publik rapi dan ada mode print/export PDF.</p></div>
+      </section>
+    </main>`);
+}
+
+function authPage(mode) {
+  const isLogin = mode === 'login';
+  shell(`
+    <main class="container auth-wrap">
+      <div class="card auth-card">
+        ${configWarning()}
+        <h2>${isLogin ? 'Login' : 'Register'}</h2>
+        <p class="muted">${isLogin ? 'Masuk ke dashboard portofolio.' : 'Buat akun dan mulai bangun portofolio.'}</p>
+        <form class="form" id="authForm">
+          <div class="field"><label>Email</label><input class="input" name="email" type="email" required /></div>
+          <div class="field"><label>Password</label><input class="input" name="password" type="password" minlength="6" required /></div>
+          ${isLogin ? '' : '<div class="field"><label>Nama lengkap</label><input class="input" name="full_name" required /></div>'}
+          <button class="btn primary" type="submit">${isLogin ? 'Login' : 'Register'}</button>
+        </form>
+        <p class="muted">${isLogin ? 'Belum punya akun?' : 'Sudah punya akun?'} <a href="${isLogin ? '/register' : '/login'}" data-link>${isLogin ? 'Register' : 'Login'}</a></p>
       </div>
-      <div class="hero-card">
-        <div class="browserbar"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
-        <div class="preview">
-          <div class="avatar">E</div><h3>Erdinus</h3><p>Informatics Student & Accounting Staff</p>
-          <div class="chips"><span class="chip">Accounting</span><span class="chip">Admin</span><span class="chip">Web Dev</span></div>
-          <div class="mini-project"><strong>UangKu</strong><p>Aplikasi pencatatan keuangan pribadi berbasis Supabase dan Vercel.</p></div>
+    </main>`);
+  document.querySelector('#authForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    if (!supabase) return toast('Config Supabase belum diisi.', 'error');
+    const form = Object.fromEntries(new FormData(e.target).entries());
+    setLoading(true);
+    const result = isLogin
+      ? await supabase.auth.signInWithPassword({ email: form.email, password: form.password })
+      : await supabase.auth.signUp({ email: form.email, password: form.password, options: { data: { full_name: form.full_name } } });
+    setLoading(false);
+    if (result.error) return toast(result.error.message, 'error');
+    state.session = result.data.session;
+    state.user = result.data.user;
+    if (state.user) await ensureProfile(form.full_name || form.email.split('@')[0]);
+    await hydrateUser();
+    go('/dashboard');
+  });
+}
+
+async function ensureProfile(fullName = '') {
+  if (!supabase || !state.user) return;
+  const { data: existing } = await supabase.from('profiles').select('id').eq('user_id', state.user.id).maybeSingle();
+  if (existing) return;
+  const base = slugify(fullName || state.user.email?.split('@')[0]);
+  const username = `${base}-${String(state.user.id).slice(0, 4)}`;
+  await supabase.from('profiles').insert({
+    user_id: state.user.id,
+    username,
+    full_name: fullName || 'Nama Lengkap',
+    headline: 'Professional Portfolio',
+    bio: 'Tulis ringkasan singkat tentang dirimu, pengalaman, dan keahlian utama.',
+    email_public: state.user.email,
+    is_published: false,
+    template_id: 'classic'
+  });
+}
+
+function requireAuth() {
+  if (!state.user) { go('/login'); return false; }
+  return true;
+}
+
+function dashboardShell(active, content) {
+  shell(`
+    <main class="container layout">
+      <aside class="card sidebar no-print">
+        <h3>Dashboard</h3>
+        <div class="menu">
+          ${menuLink('/dashboard', 'Ringkasan', active)}
+          ${menuLink('/dashboard/profile', 'Profil', active)}
+          ${menuLink('/dashboard/projects', 'Project', active)}
+          ${menuLink('/dashboard/skills', 'Skill', active)}
+          ${menuLink('/dashboard/experience', 'Pengalaman', active)}
+          ${menuLink('/dashboard/education', 'Pendidikan', active)}
+          ${menuLink('/dashboard/certificates', 'Sertifikat', active)}
+          ${menuLink('/dashboard/settings', 'Pengaturan', active)}
+        </div>
+      </aside>
+      <section>${content}</section>
+    </main>`);
+}
+
+function menuLink(href, label, active) {
+  return `<a href="${href}" data-link class="${active === href ? 'active' : ''}">${label}</a>`;
+}
+
+async function dashboardHome() {
+  if (!requireAuth()) return;
+  await ensureProfile(state.user.email?.split('@')[0]);
+  await hydrateUser();
+  const p = state.profile;
+  const url = p ? publicUrl(p.username) : '-';
+  dashboardShell('/dashboard', `
+    <div class="grid">
+      <div class="card">
+        <h2>Ringkasan Portofolio</h2>
+        <p class="muted">Kelola data portofolio dari menu kiri. Setelah siap, aktifkan publish di Pengaturan.</p>
+        ${p ? `<div class="alert ${p.is_published ? 'success' : 'warning'}">Status: <b>${p.is_published ? 'Published' : 'Draft'}</b></div>` : ''}
+        <div class="actions">
+          <a class="btn primary" href="/dashboard/profile" data-link>Edit Profil</a>
+          ${p ? `<a class="btn ghost" href="/u/${p.username}" data-link>Lihat Link Publik</a><button class="btn" data-copy="${url}">Copy Link</button>` : ''}
         </div>
       </div>
-    </div></section>
-    <section id="fitur" class="section"><div class="container"><div class="section-title"><div><h2>Fitur utama</h2><p class="lead">Fokus ke fitur yang benar-benar bisa dijual.</p></div></div>
-      <div class="cards"><div class="card"><h3>Link publik</h3><p>Setiap user punya halaman seperti /u/username yang bisa dikirim ke HRD.</p></div><div class="card"><h3>Dashboard edit</h3><p>User bisa tambah skill, project, pengalaman, pendidikan, dan sertifikat.</p></div><div class="card"><h3>Export PDF</h3><p>Halaman portofolio bisa dicetak atau disimpan sebagai PDF untuk lamaran kerja.</p></div></div>
-    </div></section>
-    <section id="harga" class="section"><div class="container"><div class="section-title"><div><h2>Paket jualan</h2><p class="lead">Bisa kamu pakai untuk mulai cari pembeli pertama.</p></div></div>
-      <div class="pricing"><div class="card"><h3>Free</h3><div class="price">Rp0</div><p>1 template, 3 project, watermark.</p></div><div class="card"><h3>Pro</h3><div class="price">Rp29rb</div><p>Tanpa watermark, export PDF, lebih banyak project.</p></div><div class="card"><h3>Dibantu Buatkan</h3><div class="price">Rp99rb+</div><p>Kamu inputkan data klien dan siap kirim link.</p></div></div>
-    </div></section>
-    <section id="cara" class="section"><div class="container"><div class="cards"><div class="card"><h3>1. Daftar</h3><p>User buat akun dan pilih username.</p></div><div class="card"><h3>2. Isi data</h3><p>Tambah profil, skill, project, pengalaman, dan kontak.</p></div><div class="card"><h3>3. Share</h3><p>Bagikan link atau export PDF.</p></div></div></div></section>
-  </main><footer class="footer">© ${new Date().getFullYear()} PortoLink. Built for portfolio business MVP.</footer>`;
+      ${p ? `<div class="card"><h3>Link kamu</h3><p><code>${escapeHtml(url)}</code></p><p class="muted">Bagikan link ini ke HRD, klien, atau bio media sosial.</p></div>` : ''}
+    </div>`);
+  bindCopy();
 }
 
-function authPage(type) {
-  const isLogin = type === 'login';
-  app.innerHTML = `<div class="auth-wrap"><div class="auth-card">
-    <button class="brand" onclick="nav('/')"><span class="logo">P</span><span>PortoLink</span></button>
-    <h1>${isLogin ? 'Login' : 'Buat akun'}</h1><p class="muted">${hasSupabase ? 'Gunakan akun Supabase Auth.' : 'Mode demo aktif karena config Supabase masih kosong.'}</p>
-    <form class="form" onsubmit="${isLogin ? 'signIn' : 'signUp'}(event)">
-      ${!isLogin ? '<div class="field"><label>Nama lengkap</label><input class="input" name="full_name" placeholder="Nama kamu" required></div><div class="field"><label>Username</label><input class="input" name="username" placeholder="contoh: erdinus" required></div>' : ''}
-      <div class="field"><label>Email</label><input class="input" name="email" type="email" required></div>
-      <div class="field"><label>Password</label><input class="input" name="password" type="password" minlength="6" required></div>
-      <button class="btn primary" type="submit">${isLogin ? 'Login' : 'Daftar'}</button>
-    </form>
-    <p class="muted">${isLogin ? 'Belum punya akun?' : 'Sudah punya akun?'} <button class="btn small ghost" onclick="nav('${isLogin ? '/register' : '/login'}')">${isLogin ? 'Daftar' : 'Login'}</button></p>
-  </div></div>`;
+function bindCopy() {
+  document.querySelectorAll('[data-copy]').forEach(btn => btn.addEventListener('click', async () => {
+    await navigator.clipboard.writeText(btn.dataset.copy);
+    toast('Link disalin.');
+  }));
 }
 
-async function dashboard() {
-  const data = await loadMyPortfolio();
-  if (!state.user) return nav('/login');
-  if (!data) return app.innerHTML = `<div class="auth-wrap"><div class="auth-card"><h1>Profil belum ada</h1><p class="muted">Buat ulang akun atau cek tabel profiles.</p><button class="btn primary" onclick="signOut()">Keluar</button></div></div>`;
-  state.profile = data.profile;
-  state.portfolio = data;
-  app.innerHTML = `<div class="dash"><aside class="sidebar"><div class="brand"><span class="logo">P</span><span>PortoLink</span></div>
-    <div class="side-nav">
-      ${['overview','profile','projects','skills','experiences','educations','certificates','settings'].map(t => `<button class="${state.tab===t?'active':''}" onclick="setTab('${t}')">${label(t)}</button>`).join('')}
-      <a href="/u/${escapeHtml(data.profile.username)}" target="_blank">Lihat Portofolio</a>
-      <button onclick="signOut()">Logout</button>
-    </div></aside><main class="dash-main"><div class="dash-head"><div><h1>${label(state.tab)}</h1><p class="muted">Kelola portofolio kamu dari sini.</p></div><div class="actions"><button class="btn ghost" onclick="nav('/')">Home</button><a class="btn primary" target="_blank" href="/u/${escapeHtml(data.profile.username)}">Public Link</a></div></div>${tabContent(data)}</main></div>`;
+async function profilePage() {
+  if (!requireAuth()) return;
+  await ensureProfile(state.user.email?.split('@')[0]);
+  await hydrateUser();
+  const p = state.profile || {};
+  dashboardShell('/dashboard/profile', `
+    <div class="card">
+      <h2>Edit Profil</h2>
+      <form class="form" id="profileForm">
+        ${input('Username', 'username', p.username, true)}
+        ${input('Nama Lengkap', 'full_name', p.full_name, true)}
+        ${input('Headline', 'headline', p.headline)}
+        ${textarea('Bio', 'bio', p.bio)}
+        ${input('Lokasi', 'location', p.location)}
+        ${input('Email publik', 'email_public', p.email_public, false, 'email')}
+        ${input('Nomor WhatsApp/HP', 'phone_public', p.phone_public)}
+        ${input('URL Foto Profil', 'photo_url', p.photo_url)}
+        ${input('Website', 'website_url', p.website_url)}
+        ${input('LinkedIn', 'linkedin_url', p.linkedin_url)}
+        ${input('GitHub', 'github_url', p.github_url)}
+        ${input('Instagram', 'instagram_url', p.instagram_url)}
+        <button class="btn primary" type="submit">Simpan Profil</button>
+      </form>
+    </div>`);
+  document.querySelector('#profileForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const data = Object.fromEntries(new FormData(e.target).entries());
+    data.username = slugify(data.username);
+    const { error } = await supabase.from('profiles').update(data).eq('user_id', state.user.id);
+    if (error) return toast(error.message, 'error');
+    await hydrateUser();
+    toast('Profil disimpan.');
+  });
 }
-function label(t){return ({overview:'Overview',profile:'Profil',projects:'Project',skills:'Skill',experiences:'Pengalaman',educations:'Pendidikan',certificates:'Sertifikat',settings:'Pengaturan'})[t] || t}
-window.setTab = (tab) => { state.tab = tab; render(); };
-function tabContent(data){
-  const p = data.profile;
-  if (state.tab === 'overview') return `<div class="grid-3"><div class="panel"><h3>Username</h3><p>/u/${escapeHtml(p.username)}</p></div><div class="panel"><h3>Project</h3><p>${data.projects.length} item</p></div><div class="panel"><h3>Status</h3><p>${p.is_published ? 'Published' : 'Draft'} · ${p.is_premium ? 'Premium' : 'Free'}</p></div></div><div class="panel"><h3>Langkah jualan</h3><p class="muted">Mulai dari jasa manual: inputkan data klien lewat dashboard ini, lalu kirim link public dan PDF.</p></div>`;
-  if (state.tab === 'profile') return profileForm(p);
-  if (state.tab === 'projects') return crudSection('projects', data.projects, projectForm(state.editing.projects), renderProjectRow);
-  if (state.tab === 'skills') return crudSection('skills', data.skills, skillForm(state.editing.skills), renderSkillRow);
-  if (state.tab === 'experiences') return crudSection('experiences', data.experiences, experienceForm(state.editing.experiences), renderExperienceRow);
-  if (state.tab === 'educations') return crudSection('educations', data.educations, educationForm(state.editing.educations), renderEducationRow);
-  if (state.tab === 'certificates') return crudSection('certificates', data.certificates, certificateForm(state.editing.certificates), renderCertificateRow);
-  if (state.tab === 'settings') return `<div class="panel"><h3>Publish & Premium</h3><form class="form" onsubmit="saveSettings(event)"><div class="grid-2"><div class="field"><label>Status publish</label><select name="is_published"><option value="true" ${p.is_published?'selected':''}>Published</option><option value="false" ${!p.is_published?'selected':''}>Draft</option></select></div><div class="field"><label>Template</label><select name="template_id"><option value="clean-blue">Clean Blue</option><option value="minimal">Minimal</option></select></div></div><button class="btn primary">Simpan</button></form></div><div class="panel"><h3>Export PDF</h3><p class="muted">Buka halaman public, klik Export PDF, lalu pilih Save as PDF.</p><a class="btn primary" href="/u/${escapeHtml(p.username)}" target="_blank">Buka Halaman PDF</a></div>`;
-  return '';
+
+function input(label, name, value = '', required = false, type = 'text') {
+  return `<div class="field"><label>${label}</label><input class="input" type="${type}" name="${name}" value="${escapeHtml(value || '')}" ${required ? 'required' : ''}/></div>`;
 }
-function profileForm(p){return `<div class="panel"><form class="form" onsubmit="saveProfile(event)"><div class="grid-2"><div class="field"><label>Username</label><input class="input" name="username" value="${escapeHtml(p.username)}" required></div><div class="field"><label>Nama lengkap</label><input class="input" name="full_name" value="${escapeHtml(p.full_name)}" required></div><div class="field"><label>Headline</label><input class="input" name="headline" value="${escapeHtml(p.headline || '')}"></div><div class="field"><label>Lokasi</label><input class="input" name="location" value="${escapeHtml(p.location || '')}"></div><div class="field"><label>Email publik</label><input class="input" name="email_public" value="${escapeHtml(p.email_public || '')}"></div><div class="field"><label>Foto URL</label><input class="input" name="photo_url" value="${escapeHtml(p.photo_url || '')}" placeholder="https://..."></div></div><div class="field"><label>Bio</label><textarea name="bio">${escapeHtml(p.bio || '')}</textarea></div><div class="grid-2"><div class="field"><label>LinkedIn</label><input class="input" name="linkedin_url" value="${escapeHtml(p.linkedin_url || '')}"></div><div class="field"><label>GitHub</label><input class="input" name="github_url" value="${escapeHtml(p.github_url || '')}"></div><div class="field"><label>Instagram</label><input class="input" name="instagram_url" value="${escapeHtml(p.instagram_url || '')}"></div><div class="field"><label>Website</label><input class="input" name="website_url" value="${escapeHtml(p.website_url || '')}"></div></div><button class="btn primary">Simpan Profil</button></form></div>`}
-function formDataObj(form){return Object.fromEntries(new FormData(form).entries())}
-async function saveProfile(event){event.preventDefault(); await saveRecord('profiles', formDataObj(event.target), state.profile.id, true)}
-window.saveProfile=saveProfile;
-async function saveSettings(event){event.preventDefault(); const o=formDataObj(event.target); o.is_published=o.is_published==='true'; await saveRecord('profiles', o, state.profile.id, true)}
-window.saveSettings=saveSettings;
-function crudSection(table, rows, form, rowRenderer){return `<div class="panel"><h3>${state.editing[table] ? 'Edit Data' : 'Tambah Data'}</h3>${form}</div><div class="panel"><h3>Data</h3><div class="list">${rows.length ? rows.map(rowRenderer).join('') : '<div class="empty">Belum ada data.</div>'}</div></div>`}
-function projectForm(x={}){return `<form class="form" onsubmit="upsertItem(event,'projects')"><div class="grid-2"><input type="hidden" name="id" value="${escapeHtml(x?.id || '')}"><div class="field"><label>Judul</label><input class="input" name="title" value="${escapeHtml(x?.title || '')}" required></div><div class="field"><label>Tags</label><input class="input" name="tags" value="${escapeHtml(x?.tags || '')}" placeholder="Web, Supabase, Vercel"></div><div class="field"><label>Demo URL</label><input class="input" name="demo_url" value="${escapeHtml(x?.demo_url || '')}"></div><div class="field"><label>Repo URL</label><input class="input" name="repo_url" value="${escapeHtml(x?.repo_url || '')}"></div><div class="field"><label>Image URL</label><input class="input" name="image_url" value="${escapeHtml(x?.image_url || '')}"></div></div><div class="field"><label>Deskripsi</label><textarea name="description">${escapeHtml(x?.description || '')}</textarea></div><div class="actions"><button class="btn primary">Simpan Project</button>${x?.id ? '<button type="button" class="btn ghost" onclick="cancelEdit()">Batal Edit</button>' : ''}</div></form>`}
-function skillForm(x={}){return `<form class="form" onsubmit="upsertItem(event,'skills')"><input type="hidden" name="id" value="${escapeHtml(x?.id || '')}"><div class="grid-2"><div class="field"><label>Skill</label><input class="input" name="name" value="${escapeHtml(x?.name || '')}" required></div><div class="field"><label>Level</label><input class="input" name="level" value="${escapeHtml(x?.level || '')}" placeholder="Beginner/Intermediate/Advanced"></div></div><div class="actions"><button class="btn primary">Simpan Skill</button>${x?.id ? '<button type="button" class="btn ghost" onclick="cancelEdit()">Batal Edit</button>' : ''}</div></form>`}
-function experienceForm(x={}){return `<form class="form" onsubmit="upsertItem(event,'experiences')"><input type="hidden" name="id" value="${escapeHtml(x?.id || '')}"><div class="grid-2"><div class="field"><label>Posisi</label><input class="input" name="role" value="${escapeHtml(x?.role || '')}" required></div><div class="field"><label>Perusahaan</label><input class="input" name="company" value="${escapeHtml(x?.company || '')}" required></div><div class="field"><label>Mulai</label><input class="input" name="start_date" value="${escapeHtml(x?.start_date || '')}"></div><div class="field"><label>Selesai</label><input class="input" name="end_date" value="${escapeHtml(x?.end_date || '')}"></div></div><div class="field"><label>Deskripsi</label><textarea name="description">${escapeHtml(x?.description || '')}</textarea></div><div class="actions"><button class="btn primary">Simpan Pengalaman</button>${x?.id ? '<button type="button" class="btn ghost" onclick="cancelEdit()">Batal Edit</button>' : ''}</div></form>`}
-function educationForm(x={}){return `<form class="form" onsubmit="upsertItem(event,'educations')"><input type="hidden" name="id" value="${escapeHtml(x?.id || '')}"><div class="grid-2"><div class="field"><label>Sekolah/Kampus</label><input class="input" name="school" value="${escapeHtml(x?.school || '')}" required></div><div class="field"><label>Jurusan/Gelar</label><input class="input" name="degree" value="${escapeHtml(x?.degree || '')}"></div><div class="field"><label>Tahun</label><input class="input" name="year" value="${escapeHtml(x?.year || '')}"></div></div><div class="field"><label>Deskripsi</label><textarea name="description">${escapeHtml(x?.description || '')}</textarea></div><div class="actions"><button class="btn primary">Simpan Pendidikan</button>${x?.id ? '<button type="button" class="btn ghost" onclick="cancelEdit()">Batal Edit</button>' : ''}</div></form>`}
-function certificateForm(x={}){return `<form class="form" onsubmit="upsertItem(event,'certificates')"><input type="hidden" name="id" value="${escapeHtml(x?.id || '')}"><div class="grid-2"><div class="field"><label>Nama sertifikat</label><input class="input" name="title" value="${escapeHtml(x?.title || '')}" required></div><div class="field"><label>Penerbit</label><input class="input" name="issuer" value="${escapeHtml(x?.issuer || '')}"></div><div class="field"><label>Tahun</label><input class="input" name="year" value="${escapeHtml(x?.year || '')}"></div><div class="field"><label>URL</label><input class="input" name="url" value="${escapeHtml(x?.url || '')}"></div></div><div class="actions"><button class="btn primary">Simpan Sertifikat</button>${x?.id ? '<button type="button" class="btn ghost" onclick="cancelEdit()">Batal Edit</button>' : ''}</div></form>`}
-function renderProjectRow(x){return `<div class="row"><div><strong>${escapeHtml(x.title)}</strong><small>${escapeHtml(x.description || '')}</small></div><div class="actions"><button class="btn small ghost" onclick="editItem('projects','${x.id}')">Edit</button><button class="btn small danger" onclick="deleteItem('projects','${x.id}')">Hapus</button></div></div>`}
-function renderSkillRow(x){return `<div class="row"><div><strong>${escapeHtml(x.name)}</strong><small>${escapeHtml(x.level || '')}</small></div><button class="btn small ghost" onclick="editItem('skills','${x.id}')">Edit</button><button class="btn small danger" onclick="deleteItem('skills','${x.id}')">Hapus</button></div>`}
-function renderExperienceRow(x){return `<div class="row"><div><strong>${escapeHtml(x.role)} · ${escapeHtml(x.company)}</strong><small>${escapeHtml(x.start_date || '')} - ${escapeHtml(x.end_date || '')}</small></div><button class="btn small ghost" onclick="editItem('experiences','${x.id}')">Edit</button><button class="btn small danger" onclick="deleteItem('experiences','${x.id}')">Hapus</button></div>`}
-function renderEducationRow(x){return `<div class="row"><div><strong>${escapeHtml(x.school)}</strong><small>${escapeHtml(x.degree || '')} · ${escapeHtml(x.year || '')}</small></div><button class="btn small ghost" onclick="editItem('educations','${x.id}')">Edit</button><button class="btn small danger" onclick="deleteItem('educations','${x.id}')">Hapus</button></div>`}
-function renderCertificateRow(x){return `<div class="row"><div><strong>${escapeHtml(x.title)}</strong><small>${escapeHtml(x.issuer || '')} · ${escapeHtml(x.year || '')}</small></div><button class="btn small ghost" onclick="editItem('certificates','${x.id}')">Edit</button><button class="btn small danger" onclick="deleteItem('certificates','${x.id}')">Hapus</button></div>`}
-async function upsertItem(event, table){event.preventDefault(); let obj=formDataObj(event.target); const id = obj.id || null; delete obj.id; await saveRecord(table, obj, id); state.editing[table] = null; event.target.reset();}
-window.upsertItem=upsertItem;
-async function saveRecord(table, obj, id=null, isProfile=false){
-  if (!state.user) return toast('Login dulu.');
-  if (!hasSupabase) {
-    const data=getDemo();
-    if (isProfile) data.profile={...data.profile,...obj};
-    else if (id) data[table]=data[table].map(x=>x.id===id ? {...x,...obj} : x);
-    else data[table].unshift({id:crypto.randomUUID(),...obj});
-    setDemo(data); toast('Tersimpan di mode demo.'); render(); return;
+function textarea(label, name, value = '') {
+  return `<div class="field"><label>${label}</label><textarea name="${name}">${escapeHtml(value || '')}</textarea></div>`;
+}
+
+const tableConfigs = {
+  projects: { title: 'Project', route: '/dashboard/projects', fields: [
+    ['title','Judul','text',true], ['role','Role','text'], ['tech_stack','Tech Stack','text'], ['demo_url','Demo URL','text'], ['repo_url','Repo URL','text'], ['image_url','Image URL','text'], ['description','Deskripsi','textarea']
+  ]},
+  skills: { title: 'Skill', route: '/dashboard/skills', fields: [
+    ['name','Nama Skill','text',true], ['level','Level','select'], ['category','Kategori','text']
+  ]},
+  experiences: { title: 'Pengalaman', route: '/dashboard/experience', fields: [
+    ['company','Perusahaan/Organisasi','text',true], ['role','Posisi','text',true], ['start_date','Mulai','date'], ['end_date','Selesai','date'], ['description','Deskripsi','textarea']
+  ]},
+  educations: { title: 'Pendidikan', route: '/dashboard/education', fields: [
+    ['school','Sekolah/Kampus','text',true], ['degree','Jurusan/Gelar','text'], ['start_year','Tahun Mulai','number'], ['end_year','Tahun Selesai','number'], ['description','Deskripsi','textarea']
+  ]},
+  certificates: { title: 'Sertifikat', route: '/dashboard/certificates', fields: [
+    ['title','Judul Sertifikat','text',true], ['issuer','Penerbit','text'], ['issued_year','Tahun','number'], ['credential_url','Credential URL','text'], ['description','Deskripsi','textarea']
+  ]}
+};
+
+async function crudPage(table) {
+  if (!requireAuth()) return;
+  await hydrateUser();
+  const cfg = tableConfigs[table];
+  const { data = [], error } = await supabase.from(table).select('*').eq('user_id', state.user.id).order('sort_order', { ascending: true }).order('created_at', { ascending: false });
+  if (error) return dashboardShell(cfg.route, `<div class="alert error">${escapeHtml(error.message)}</div>`);
+  dashboardShell(cfg.route, `
+    <div class="grid">
+      <div class="card">
+        <h2>Kelola ${cfg.title}</h2>
+        <form class="form" id="crudForm">
+          <input type="hidden" name="id" />
+          ${cfg.fields.map(fieldInput).join('')}
+          <div class="field"><label>Urutan</label><input class="input" type="number" name="sort_order" value="0" /></div>
+          <div class="actions"><button class="btn primary" type="submit">Simpan</button><button class="btn ghost" type="button" id="resetForm">Reset</button></div>
+        </form>
+      </div>
+      <div class="card">
+        <h3>Daftar ${cfg.title}</h3>
+        ${data.length ? `<div class="list">${data.map(row => rowCard(table, row)).join('')}</div>` : '<div class="empty">Belum ada data.</div>'}
+      </div>
+    </div>`);
+  const form = document.querySelector('#crudForm');
+  document.querySelector('#resetForm').addEventListener('click', () => form.reset());
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const payload = Object.fromEntries(new FormData(form).entries());
+    const id = payload.id; delete payload.id;
+    payload.user_id = state.user.id;
+    payload.sort_order = Number(payload.sort_order || 0);
+    Object.keys(payload).forEach(k => { if (payload[k] === '') payload[k] = null; });
+    const result = id ? await supabase.from(table).update(payload).eq('id', id).eq('user_id', state.user.id) : await supabase.from(table).insert(payload);
+    if (result.error) return toast(result.error.message, 'error');
+    toast('Data disimpan.');
+    crudPage(table);
+  });
+  document.querySelectorAll('[data-edit]').forEach(btn => btn.addEventListener('click', () => {
+    const row = data.find(x => x.id === btn.dataset.edit);
+    if (!row) return;
+    form.id.value = row.id;
+    cfg.fields.forEach(([name]) => { if (form[name]) form[name].value = row[name] || ''; });
+    form.sort_order.value = row.sort_order || 0;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }));
+  document.querySelectorAll('[data-delete]').forEach(btn => btn.addEventListener('click', async () => {
+    if (!confirm('Hapus data ini?')) return;
+    const { error: delError } = await supabase.from(table).delete().eq('id', btn.dataset.delete).eq('user_id', state.user.id);
+    if (delError) return toast(delError.message, 'error');
+    toast('Data dihapus.');
+    crudPage(table);
+  }));
+}
+
+function fieldInput([name, label, type, required]) {
+  if (type === 'textarea') return `<div class="field"><label>${label}</label><textarea name="${name}" ${required ? 'required' : ''}></textarea></div>`;
+  if (type === 'select') return `<div class="field"><label>${label}</label><select name="${name}"><option>Beginner</option><option>Intermediate</option><option>Advanced</option><option>Expert</option></select></div>`;
+  return `<div class="field"><label>${label}</label><input class="input" type="${type}" name="${name}" ${required ? 'required' : ''}/></div>`;
+}
+
+function rowCard(table, row) {
+  const title = row.title || row.name || row.company || row.school || 'Data';
+  const meta = row.role || row.level || row.degree || row.issuer || '';
+  return `<div class="item"><h3>${escapeHtml(title)}</h3><div class="item-meta">${escapeHtml(meta)}</div><p class="muted">${escapeHtml(row.description || row.tech_stack || row.category || '')}</p><div class="actions"><button class="btn" data-edit="${row.id}">Edit</button><button class="btn danger" data-delete="${row.id}">Hapus</button></div></div>`;
+}
+
+async function settingsPage() {
+  if (!requireAuth()) return;
+  await hydrateUser();
+  const p = state.profile || {};
+  dashboardShell('/dashboard/settings', `
+    <div class="grid">
+      <div class="card">
+        <h2>Pengaturan Publikasi</h2>
+        <form class="form" id="settingsForm">
+          <div class="field"><label>Status Publish</label><select name="is_published"><option value="true" ${p.is_published ? 'selected' : ''}>Published</option><option value="false" ${!p.is_published ? 'selected' : ''}>Draft</option></select></div>
+          <div class="field"><label>Template</label><select name="template_id"><option value="classic">Classic</option><option value="modern" ${p.template_id === 'modern' ? 'selected' : ''}>Modern</option></select></div>
+          <button class="btn primary" type="submit">Simpan Pengaturan</button>
+        </form>
+      </div>
+      <div class="card">
+        <h3>PDF</h3><p class="muted">Buka halaman publik, lalu klik Export PDF. Browser akan membuka dialog print/save as PDF.</p>
+        ${p.username ? `<a class="btn ghost" href="/u/${p.username}/pdf" data-link>Buka Versi PDF</a>` : ''}
+      </div>
+    </div>`);
+  document.querySelector('#settingsForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const data = Object.fromEntries(new FormData(e.target).entries());
+    data.is_published = data.is_published === 'true';
+    const { error } = await supabase.from('profiles').update(data).eq('user_id', state.user.id);
+    if (error) return toast(error.message, 'error');
+    await hydrateUser(); toast('Pengaturan disimpan.');
+  });
+}
+
+async function loadPublic(username, forPdf = false) {
+  if (!supabase) return shell(`<main class="container">${configWarning()}</main>`);
+  const { data: profile, error } = await supabase.from('profiles').select('*').eq('username', username).maybeSingle();
+  if (error || !profile) return notFound('Portofolio tidak ditemukan.');
+  const allowed = profile.is_published || state.user?.id === profile.user_id || state.isAdmin;
+  if (!allowed) return notFound('Portofolio masih draft.');
+  const [projects, skills, experiences, educations, certificates] = await Promise.all([
+    loadRows('projects', profile.user_id), loadRows('skills', profile.user_id), loadRows('experiences', profile.user_id), loadRows('educations', profile.user_id), loadRows('certificates', profile.user_id)
+  ]);
+  shell(`
+    <main class="container public-hero">
+      <section class="card public-card">
+        <div class="photo">${profile.photo_url ? `<img src="${escapeHtml(profile.photo_url)}" alt="Foto profil"/>` : initials(profile.full_name)}</div>
+        <div>
+          <h1 class="public-title">${escapeHtml(profile.full_name)}</h1>
+          <p class="muted"><b>${escapeHtml(profile.headline || '')}</b></p>
+          <p>${escapeHtml(profile.bio || '')}</p>
+          <div class="pill-row">${[profile.location, profile.email_public, profile.phone_public].filter(Boolean).map(x => `<span class="pill">${escapeHtml(x)}</span>`).join('')}</div>
+          <div class="actions no-print"><button class="btn primary" onclick="window.print()">Export PDF</button>${profile.website_url ? `<a class="btn ghost" href="${escapeHtml(profile.website_url)}" target="_blank" rel="noopener">Website</a>` : ''}${profile.linkedin_url ? `<a class="btn ghost" href="${escapeHtml(profile.linkedin_url)}" target="_blank" rel="noopener">LinkedIn</a>` : ''}${profile.github_url ? `<a class="btn ghost" href="${escapeHtml(profile.github_url)}" target="_blank" rel="noopener">GitHub</a>` : ''}</div>
+        </div>
+      </section>
+      ${publicSection('Skill', skills.map(s => `<span class="pill">${escapeHtml(s.name)}${s.level ? ' • ' + escapeHtml(s.level) : ''}</span>`).join(''), true)}
+      ${publicSection('Project', projects.map(projectCard).join(''))}
+      ${publicSection('Pengalaman', experiences.map(experienceCard).join(''))}
+      ${publicSection('Pendidikan', educations.map(educationCard).join(''))}
+      ${publicSection('Sertifikat', certificates.map(certificateCard).join(''))}
+      ${forPdf ? '' : contactSection()}
+      ${profile.is_premium ? '' : '<div class="watermark no-print">Made with PortoLink</div>'}
+    </main>`);
+  const contactForm = document.querySelector('#contactForm');
+  if (contactForm) {
+    contactForm.addEventListener('submit', async e => {
+      e.preventDefault();
+      const data = Object.fromEntries(new FormData(e.target).entries());
+      data.portfolio_user_id = profile.user_id;
+      const { error: msgErr } = await supabase.from('contact_messages').insert(data);
+      if (msgErr) return toast(msgErr.message, 'error');
+      e.target.reset();
+      toast('Pesan berhasil dikirim.');
+    });
   }
-  if (!isProfile) obj.user_id=state.user.id;
-  const q = id ? supabase.from(table).update(obj).eq('id', id) : supabase.from(table).insert(obj);
-  const { error } = await q;
-  if (error) return toast(error.message);
-  toast('Berhasil disimpan.'); render();
+  if (forPdf) setTimeout(() => window.print(), 700);
 }
 
-function editItem(table,id){
-  const row = state.portfolio?.[table]?.find(x => x.id === id);
-  if (!row) return toast('Data tidak ditemukan.');
-  state.editing[table] = row;
-  render();
+async function loadRows(table, userId) {
+  const { data } = await supabase.from(table).select('*').eq('user_id', userId).order('sort_order', { ascending: true }).order('created_at', { ascending: false });
+  return data || [];
 }
-window.editItem=editItem;
-function cancelEdit(){ state.editing = {}; render(); }
-window.cancelEdit=cancelEdit;
+function initials(name = 'P') { return escapeHtml(String(name).split(' ').map(x => x[0]).join('').slice(0,2).toUpperCase() || 'P'); }
+function publicSection(title, content, inline = false) { return `<section class="card" style="margin-top:18px"><h2>${title}</h2>${content ? `<div class="${inline ? 'pill-row' : 'list'}">${content}</div>` : '<div class="empty">Belum ada data.</div>'}</section>`; }
 
-async function deleteItem(table,id){
-  if (!confirm('Hapus data ini?')) return;
-  if (!hasSupabase) { const data=getDemo(); data[table]=data[table].filter(x=>x.id!==id); setDemo(data); render(); return; }
-  const { error } = await supabase.from(table).delete().eq('id', id);
-  if (error) return toast(error.message);
-  toast('Berhasil dihapus.'); render();
-}
-window.deleteItem=deleteItem;
-
-async function publicPage(username) {
-  const data = await loadPublicPortfolio(username);
-  if (!data) return app.innerHTML = `<div class="auth-wrap"><div class="auth-card"><h1>Portofolio tidak ditemukan</h1><p class="muted">Cek username atau status publish.</p><button class="btn primary" onclick="nav('/')">Kembali</button></div></div>`;
-  const { profile:p } = data;
-  app.innerHTML = `<div class="public-wrap"><header class="topbar no-print"><div class="container nav"><button class="brand" onclick="nav('/')"><span class="logo">P</span><span>PortoLink</span></button><div class="actions"><button class="btn ghost" onclick="printPortfolio()">Export PDF</button><button class="btn primary" onclick="nav('/register')">Buat Punya Kamu</button></div></div></header>
-  <section class="public-hero"><div class="container public-card"><div class="public-avatar">${p.photo_url ? `<img src="${escapeHtml(p.photo_url)}" alt="${escapeHtml(p.full_name)}">` : initials(p.full_name)}</div><div><h1>${escapeHtml(p.full_name)}</h1><p><strong>${escapeHtml(p.headline || '')}</strong></p><p>${escapeHtml(p.bio || '')}</p><div class="actions">${link(p.email_public ? `mailto:${p.email_public}` : '', 'Email')}${link(p.linkedin_url,'LinkedIn')}${link(p.github_url,'GitHub')}${link(p.instagram_url,'Instagram')}${link(p.website_url,'Website')}</div></div></div></section>
-  <main class="public-content"><div class="container portfolio-grid">
-    <section class="portfolio-section"><h2>Skill</h2><div class="chips">${data.skills.length ? data.skills.map(s=>`<span class="chip">${escapeHtml(s.name)}${s.level ? ' · '+escapeHtml(s.level):''}</span>`).join('') : '<p class="muted">Belum ada skill.</p>'}</div></section>
-    <section class="portfolio-section"><h2>Pengalaman</h2><div class="list">${data.experiences.length ? data.experiences.map(x=>`<div><strong>${escapeHtml(x.role)} · ${escapeHtml(x.company)}</strong><p class="muted">${escapeHtml(x.start_date||'')} - ${escapeHtml(x.end_date||'')}</p><p>${escapeHtml(x.description||'')}</p></div>`).join('') : '<p class="muted">Belum ada pengalaman.</p>'}</div></section>
-    <section class="portfolio-section"><h2>Project</h2><div class="list">${data.projects.length ? data.projects.map(x=>`<article class="mini-project">${x.image_url ? `<img class="project-img" src="${escapeHtml(x.image_url)}" alt="${escapeHtml(x.title)}">` : ''}<h3>${escapeHtml(x.title)}</h3><p>${escapeHtml(x.description||'')}</p><div class="chips">${csvTags(x.tags).map(t=>`<span class="chip">${escapeHtml(t)}</span>`).join('')}</div><div class="actions">${link(x.demo_url,'Demo')}${link(x.repo_url,'Repo')}</div></article>`).join('') : '<p class="muted">Belum ada project.</p>'}</div></section>
-    <section class="portfolio-section"><h2>Pendidikan & Sertifikat</h2><div class="list">${data.educations.map(x=>`<div><strong>${escapeHtml(x.school)}</strong><p class="muted">${escapeHtml(x.degree||'')} · ${escapeHtml(x.year||'')}</p><p>${escapeHtml(x.description||'')}</p></div>`).join('') || '<p class="muted">Belum ada pendidikan.</p>'}${data.certificates.map(x=>`<div><strong>${escapeHtml(x.title)}</strong><p class="muted">${escapeHtml(x.issuer||'')} · ${escapeHtml(x.year||'')}</p>${link(x.url,'Lihat')}</div>`).join('')}</div></section>
-  </div><div class="container"><div class="watermark ${p.is_premium ? 'hide' : ''}">Made with PortoLink</div></div></main></div>`;
+function contactSection() {
+  return `<section class="card no-print" style="margin-top:18px"><h2>Kirim Pesan</h2><form class="form" id="contactForm"><div class="grid grid-2"><div class="field"><label>Nama</label><input class="input" name="name" required /></div><div class="field"><label>Email</label><input class="input" type="email" name="email" required /></div></div><div class="field"><label>Pesan</label><textarea name="message" required></textarea></div><button class="btn primary" type="submit">Kirim Pesan</button></form></section>`;
 }
 
-async function render() {
-  try {
-    const p = path();
-    if (p.startsWith('/u/')) return publicPage(decodeURIComponent(p.split('/u/')[1] || ''));
-    if (p === '/login') return authPage('login');
-    if (p === '/register') return authPage('register');
-    if (p.startsWith('/dashboard')) return dashboard();
-    return landing();
-  } catch (err) {
-    console.error(err);
-    app.innerHTML = `<div class="auth-wrap"><div class="auth-card"><h1>Terjadi error</h1><p class="muted">${escapeHtml(err.message)}</p><button class="btn primary" onclick="nav('/')">Kembali</button></div></div>`;
-  }
+function projectCard(p) { return `<div class="item"><h3>${escapeHtml(p.title)}</h3><div class="item-meta">${escapeHtml([p.role, p.tech_stack].filter(Boolean).join(' • '))}</div><p>${escapeHtml(p.description || '')}</p><div class="actions no-print">${p.demo_url ? `<a class="btn ghost" href="${escapeHtml(p.demo_url)}" target="_blank" rel="noopener">Demo</a>` : ''}${p.repo_url ? `<a class="btn ghost" href="${escapeHtml(p.repo_url)}" target="_blank" rel="noopener">Repo</a>` : ''}</div></div>`; }
+function experienceCard(x) { return `<div class="item"><h3>${escapeHtml(x.role)}</h3><div class="item-meta">${escapeHtml(x.company)} • ${escapeHtml([x.start_date, x.end_date || 'Sekarang'].filter(Boolean).join(' - '))}</div><p>${escapeHtml(x.description || '')}</p></div>`; }
+function educationCard(x) { return `<div class="item"><h3>${escapeHtml(x.school)}</h3><div class="item-meta">${escapeHtml([x.degree, x.start_year, x.end_year].filter(Boolean).join(' • '))}</div><p>${escapeHtml(x.description || '')}</p></div>`; }
+function certificateCard(x) { return `<div class="item"><h3>${escapeHtml(x.title)}</h3><div class="item-meta">${escapeHtml([x.issuer, x.issued_year].filter(Boolean).join(' • '))}</div><p>${escapeHtml(x.description || '')}</p>${x.credential_url ? `<a class="btn ghost no-print" href="${escapeHtml(x.credential_url)}" target="_blank" rel="noopener">Lihat Credential</a>` : ''}</div>`; }
+
+async function adminPage(kind = 'users') {
+  if (!requireAuth()) return;
+  await hydrateUser();
+  if (!state.isAdmin) return shell(`<main class="container"><div class="alert error">Akses ditolak. Tambahkan UID akunmu ke tabel admin_users.</div></main>`);
+  if (kind === 'messages') return adminMessages();
+  const { data = [], error } = await supabase.from('profiles').select('*').order('created_at', { ascending: false });
+  const rows = data.map(p => `<tr><td><b>${escapeHtml(p.full_name)}</b><br><span class="muted">/u/${escapeHtml(p.username)}</span></td><td>${p.is_published ? '<span class="badge green">Published</span>' : '<span class="badge">Draft</span>'}</td><td>${p.is_premium ? '<span class="badge blue">Premium</span>' : '<span class="badge">Free</span>'}</td><td><div class="actions"><button class="btn" data-admin-toggle="publish" data-id="${p.id}" data-value="${!p.is_published}">${p.is_published ? 'Draft' : 'Publish'}</button><button class="btn warning" data-admin-toggle="premium" data-id="${p.id}" data-value="${!p.is_premium}">${p.is_premium ? 'Set Free' : 'Premium'}</button><a class="btn ghost" href="/u/${p.username}" data-link>Lihat</a></div></td></tr>`).join('');
+  shell(`
+    <main class="container layout">
+      <aside class="card sidebar"><h3>Admin</h3><div class="menu">${menuLink('/admin/users','Users','/admin/users')}${menuLink('/admin/messages','Messages','')}</div></aside>
+      <section class="card"><h2>Admin Users</h2>${error ? `<div class="alert error">${escapeHtml(error.message)}</div>` : ''}<div class="table-wrap"><table class="table"><thead><tr><th>User</th><th>Publish</th><th>Paket</th><th>Aksi</th></tr></thead><tbody>${rows || '<tr><td colspan="4">Belum ada user.</td></tr>'}</tbody></table></div></section>
+    </main>`);
+  document.querySelectorAll('[data-admin-toggle]').forEach(btn => btn.addEventListener('click', async () => {
+    const field = btn.dataset.adminToggle === 'publish' ? 'is_published' : 'is_premium';
+    const value = btn.dataset.value === 'true';
+    const { error: upErr } = await supabase.from('profiles').update({ [field]: value }).eq('id', btn.dataset.id);
+    if (upErr) return toast(upErr.message, 'error');
+    toast('Data user diperbarui.'); adminPage('users');
+  }));
 }
-render();
+
+async function adminMessages() {
+  const { data = [], error } = await supabase.from('contact_messages').select('*').order('created_at', { ascending: false });
+  const rows = data.map(m => `<tr><td><b>${escapeHtml(m.name)}</b><br>${escapeHtml(m.email)}</td><td>${escapeHtml(m.message)}</td><td>${new Date(m.created_at).toLocaleString('id-ID')}</td></tr>`).join('');
+  shell(`
+    <main class="container layout">
+      <aside class="card sidebar"><h3>Admin</h3><div class="menu">${menuLink('/admin/users','Users','')}${menuLink('/admin/messages','Messages','/admin/messages')}</div></aside>
+      <section class="card"><h2>Pesan Masuk</h2>${error ? `<div class="alert error">${escapeHtml(error.message)}</div>` : ''}<div class="table-wrap"><table class="table"><thead><tr><th>Pengirim</th><th>Pesan</th><th>Tanggal</th></tr></thead><tbody>${rows || '<tr><td colspan="3">Belum ada pesan.</td></tr>'}</tbody></table></div></section>
+    </main>`);
+}
+
+function notFound(message = 'Halaman tidak ditemukan.') {
+  shell(`<main class="container"><div class="card"><h2>404</h2><p class="muted">${escapeHtml(message)}</p><a class="btn primary" href="/" data-link>Kembali</a></div></main>`);
+}
+
+function render() {
+  const p = path();
+  if (p === '/') return landing();
+  if (p === '/login') return authPage('login');
+  if (p === '/register') return authPage('register');
+  if (p === '/dashboard') return dashboardHome();
+  if (p === '/dashboard/profile') return profilePage();
+  if (p === '/dashboard/projects') return crudPage('projects');
+  if (p === '/dashboard/skills') return crudPage('skills');
+  if (p === '/dashboard/experience') return crudPage('experiences');
+  if (p === '/dashboard/education') return crudPage('educations');
+  if (p === '/dashboard/certificates') return crudPage('certificates');
+  if (p === '/dashboard/settings') return settingsPage();
+  if (p === '/admin' || p === '/admin/users') return adminPage('users');
+  if (p === '/admin/messages') return adminPage('messages');
+  const publicMatch = p.match(/^\/u\/([a-zA-Z0-9-]+)(\/pdf)?$/);
+  if (publicMatch) return loadPublic(publicMatch[1], Boolean(publicMatch[2]));
+  notFound();
+}
+
+window.addEventListener('popstate', render);
+init();
